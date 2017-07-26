@@ -1,0 +1,32 @@
+{
+  "name": "shrewd",
+  "version": "0.1.0",
+  "description": "fully typed parser-combinator",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsen-/shrewd.git"
+  },
+  "keywords": [
+    "parser",
+    "combinator"
+  ],
+  "author": "jsen-",
+  "license": "(MIT OR Apache-2.0)",
+  "bugs": {
+    "url": "https://github.com/jsen-/shrewd/issues"
+  },
+  "homepage": "https://github.com/jsen-/shrewd#readme",
+  "devDependencies": {
+    "tslint": "^5.5.0",
+    "typescript": "^2.4.2",
+    "@types/node": "^8.0.0"
+  }
+}
