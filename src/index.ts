@@ -27,7 +27,6 @@ function is_skip(parser: Parser<any> | Skip): parser is Skip {
     return (parser as any)._skip === true;
 }
 
-
 export abstract class Parser<T> {
     /**
      * method used for advancing the parser
@@ -36,8 +35,23 @@ export abstract class Parser<T> {
     /**
      * matches "this" or "other", both must produce value of the same type
      */
-    or(other: Parser<T>): Parser<T> {
-        return new Or<T>(this, other);
+    or(this: Skip, other: Skip): Skip;
+    or(this: Parser<T>, other: Parser<T>): Parser<T>;
+    or(this: Parser<T> | Skip, other: Parser<T> | Skip): Parser<T> | Skip {
+        const parser = this;
+        return Object.create(this, {
+            parse: {
+                value: function parse_or(source: Source) {
+                    const pos = source.pos;
+                    const self_result = parser.parse(source);
+                    if (self_result.success) {
+                        return self_result;
+                    }
+                    source.pos = pos;
+                    return other.parse(source);
+                }
+            }
+        });
     }
     /**
      * "this" followed by "next", both matched values are returned in a tuple
@@ -47,32 +61,29 @@ export abstract class Parser<T> {
     then<U>(this: Skip, next: Parser<U>): Parser<U>;
     then<U>(this: Parser<T>, next: Skip): Parser<T>;
     then<U>(this: Parser<T>, next: Parser<U>): Parser<[T, U]>;
-
     then<U>(this: Parser<T> | Skip, next: Parser<U> | Skip): Parser<[T, U] | T | U> | Skip {
         const self = this;
         if (is_skip(next)) {
             if (is_skip(self)) {
-                const x = self;
-                const y = next;
-                // when this._skip is set => T shall already be undefined
-                return seq(self, next);
+                return new SkipSeq(self, next);
             }
             return new FollowedBy<T>(self, next);
         } else if (is_skip(self)) {
-            return new Next<U>(self, next as Parser<U>);
+            return new Next<U>(self, next);
         }
-        return new Then<T, U>(self, next as Parser<U>);
+        return new Then<T, U>(self, next);
     }
     /**
      * zero or more occurrences of "this"
      */
     many(this: Skip): Skip;
     many(this: Parser<T>): Parser<T[]>;
-    many(): Parser<T[]> | Skip {
-        if (is_skip(this)) {
-            return new SkipMany(this);
+    many(this: Parser<T> | Skip): Parser<T[]> | Skip {
+        const self = this;
+        if (is_skip(self)) {
+            return new SkipMany(self);
         }
-        return new Many<T>(this);
+        return new Many(self);
     }
     /**
      * at leat one occurrence of "this"
@@ -82,24 +93,43 @@ export abstract class Parser<T> {
     many1(this: Parser<T> | Skip): Parser<T[]> | Skip {
         const self = this;
         if (is_skip(self)) {
-            return self.then(self.many()) as Skip;
+            return self.then(self.many());
         }
-        return self.then(self.many()).map(([head, tail]) => {
-            tail.unshift(head);
-            return tail;
-        });
+        return new Many1(self);
     }
     /**
      * if "this" succeeds, map the produced value through "mapper" function
      */
-    map<U>(mapper: (value: T) => U): Parser<U> {
-        return new Map<T, U>(this, mapper);
+    map<U>(this: Skip, mapper: () => U): Parser<U>;
+    map<U>(this: Parser<T>, mapper: (value: T) => U): Parser<U>
+    map<U>(this: Parser<T> | Skip, mapper: (value?: T) => U): Parser<U> {
+        const self = this;
+        if (is_skip(self)) {
+            return new MapSkip(self, mapper);
+        }
+        return new Map(self, mapper);
+    }
+    retn<U>(value: U): Parser<U> {
+        return this.map(()=>value);
     }
     /**
      * if "this" fails, changes the error message to: `expecting "${what}"`
      */
-    expect(what: string): Parser<T> {
-        return new Expect<T>(this, what);
+    expect(this: Skip, what: string): Skip;
+    expect(this: Parser<T>, what: string): Parser<T>;
+    expect(this: Parser<T> | Skip, what: string): Parser<T> | Skip {
+        const parser = this;
+        return Object.create(this, {
+            parse: {
+                value: function parse_expect(source: Source) {
+                    const result = parser.parse(source);
+                    if (result.success) {
+                        return result;
+                    }
+                    return new ParseResultFail(source, `expecting ${this.what}`);
+                }
+            }
+        });
     }
     /**
      * matches "this" zero or more times until "until" is matched, "until" does not consume any input
@@ -109,7 +139,6 @@ export abstract class Parser<T> {
     until<U>(this: Skip, until: Parser<U>): Parser<U>;
     until<U>(this: Parser<T>, until: Skip): Parser<T[]>;
     until<U>(this: Parser<T>, until: Parser<U>): Parser<[T[], U]>;
-
     until<U>(this: Parser<T> | Skip, until: Parser<U> | Skip): Parser<[T[], U] | T[] | U> | Skip {
         // I'm leaving this here as a curiosity, the following commented code compiles without warnings
         // const self = this;
@@ -128,20 +157,94 @@ export abstract class Parser<T> {
     /**
      * discards "next"
      */
-    followedBy<U>(next: Parser<U>): Parser<T> {
-        return new FollowedBy<T>(this, next);
+    followedBy(this: Skip, next: Parser<any>): Skip;
+    followedBy(next: Parser<any>): Parser<T>;
+    followedBy(this: Parser<T> | Skip, next: Parser<any>): Parser<T> | Skip {
+        const self = this;
+        if (is_skip(self)) {
+            return new SkipSeq(self, next);
+        }
+        return new FollowedBy(self, next);
     }
     /**
      * discards "this"
      */
-    next<U>(next: Skip): Skip;
+    next(next: Skip): Skip;
     next<U>(next: Parser<U>): Parser<U>;
-
     next<U>(next: Parser<U> | Skip): Parser<U> | Skip {
         if (is_skip(next)) {
-            return seq(this.skip(), next);
+            return new SkipSeq(this, next);
         }
-        return new Next<U>(this, next);
+        return new Next(this, next);
+    }
+    /**
+     * matches "this" "n"-times
+     */
+    times(this: Skip, n: number): Skip;
+    times(this: Parser<T>, times: number): Parser<T[]>;
+    times(this: Parser<T> | Skip, times: number): Parser<T[]> | Skip {
+        const self = this;
+        if (is_skip(self)) {
+            return new TimesSkip(self, times);
+        }
+        return new Times(self, times);
+    }
+    /**
+     * parse this, but don't consume any input
+     */
+    peek(this: Skip): Skip;
+    peek(this: Parser<T>): Parser<T>;
+    peek(this: Parser<T> | Skip): Parser<T> | Skip {
+        const self = this;
+        if (is_skip(self)) {
+            return new PeekSkip(self);
+        }
+        return new Peek(self);
+    }
+
+    optional(this: Skip): Skip;
+    optional(this: Parser<T>): Parser<T | undefined>;
+    optional(this: Parser<T> | Skip): Parser<T | undefined> | Skip {
+        const parser = this;
+        return Object.create(this, {
+            parse: {
+                value: function parse_optional(source: Source): ParseResultOk<T | undefined> {
+                    const pos = source.pos;
+                    const result = parser.parse(source);
+                    if (result.success) {
+                        return result;
+                    }
+                    source.pos = pos;
+                    return new ParseResultOk(undefined);
+                }
+            }
+        });
+    }
+
+    sepBy(this: Skip, separator: Parser<any>): Skip;
+    sepBy(this: Parser<T>, separator: Parser<any>): Parser<T[]>;
+    sepBy(this: Parser<T> | Skip, separator: Parser<any>): Parser<T[]> | Skip {
+        const self = this;
+        if (is_skip(self)) {
+            return self.sepBy1(separator).or(always(undefined).skip());
+        }
+        return self.sepBy1(separator).or(always([]));
+    }
+
+    sepBy1(this: Skip, separator: Parser<any>): Skip;
+    sepBy1(this: Parser<T>, separator: Parser<any>): Parser<T[]>;
+    sepBy1(this: Parser<T> | Skip, separator: Parser<any>): Parser<T[]> | Skip {
+        const self = this;
+        if (is_skip(self)) {
+            const x = separator.next(self).many();
+            return seq(self, x);
+        }
+        const tail = separator.next(self).many();
+        return self.then(tail)
+            .map(([head, tail]) => {
+                tail.unshift(head);
+                return tail;
+            });
     }
     /**
      * only applicable to Parser<string[]>
@@ -156,11 +259,6 @@ export abstract class Parser<T> {
     not(): Skip {
         return new Not(this);
     }
-
-    peek(): Parser<T> {
-        return new Peek<T>(this);
-    }
-
     skip(): Skip {
         return new Skip(this);
     }
@@ -180,22 +278,11 @@ export class Skip extends Parser<undefined> {
     }
 }
 
-class SkipMany extends Skip {
-    constructor(parser: Parser<any>) {
-        super(parser);
-    }
-    parse(source: Source): ParseResult<undefined> {
-        for (; ;) {
-            const pos = source.pos;
-            const res = this.parser.parse(source);
-            if (!res.success) {
-                source.pos = pos;
-                return new ParseResultOk(undefined);
-            }
-        }
-    }
+export function always<T>(value: T): Parser<T> {
+    return new CustomParser((source: Source) => {
+        return new ParseResultOk(value);
+    });
 }
-
 
 /**
  * matches any input character and produces it, fails on EOF
@@ -280,6 +367,7 @@ export function seq<T>(arg: Parser<T> | Skip, ...args: (Parser<T> | Skip)[]): Pa
     }
     return new Seq(arg, ...args as Parser<T>[]);
 }
+
 class Seq<T> extends Parser<T[]> {
     private rest: Parser<T>[];
     constructor(private parser: Parser<T>, ...rest: Parser<T>[]) {
@@ -401,6 +489,22 @@ class Many<T> extends Parser<T[]> {
     }
 }
 
+class SkipMany extends Skip {
+    constructor(parser: Parser<any>) {
+        super(parser);
+    }
+    parse(source: Source): ParseResult<undefined> {
+        for (; ;) {
+            const pos = source.pos;
+            const res = this.parser.parse(source);
+            if (!res.success) {
+                source.pos = pos;
+                return new ParseResultOk(undefined);
+            }
+        }
+    }
+}
+
 class Many1<T> extends Parser<T[]> {
     constructor(private parser: Parser<T>) {
         super();
@@ -431,69 +535,22 @@ class Map<T, U> extends Parser<U> {
     parse(source: Source): ParseResult<U> {
         const result = this.from.parse(source);
         if (!result.success) {
-            return result as ParseResultFail;
-        }
-        const mapped_value = this.mapper(result.value);
-        return new ParseResultOk(mapped_value);
-    }
-}
-
-class Expect<T> extends Parser<T> {
-    constructor(private parser: Parser<T>, private what: string) {
-        super();
-    }
-    parse(source: Source): ParseResult<T> {
-        const result = this.parser.parse(source);
-        if (result.success) {
             return result;
         }
-        return new ParseResultFail(source, `expecting ${this.what}`);
+        return new ParseResultOk(this.mapper(result.value));
     }
 }
 
-class Until<T, U> extends Parser<T[]> {
-    constructor(private _repeat: Parser<T>, private _until: Parser<U>) {
+class MapSkip<U> extends Parser<U> {
+    constructor(private from: Skip, private mapper: () => U) {
         super();
     }
-    parse(source: Source): ParseResult<T[]> {
-        const results: T[] = [];
-        for (; ;) {
-            const pos = source.pos;
-            const until_res = this._until.parse(source);
-            if (until_res.success) {
-                source.pos = pos;
-                return new ParseResultOk(results);
-            }
-            source.pos = pos;
-            const res = this._repeat.parse(source);
-            if (res.success) {
-                results.push(res.value);
-            } else {
-                return res as ParseResultFail;
-            }
+    parse(source: Source): ParseResult<U> {
+        const result = this.from.parse(source);
+        if (!result.success) {
+            return result;
         }
-    }
-}
-class UntilFollowedBy<T, U> extends Parser<T[]> {
-    constructor(private _repeat: Parser<T>, private _until: Parser<U>) {
-        super();
-    }
-    parse(source: Source): ParseResult<T[]> {
-        const results: T[] = [];
-        for (; ;) {
-            const pos = source.pos;
-            const until_res = this._until.parse(source);
-            if (until_res.success) {
-                return new ParseResultOk(results);
-            }
-            source.pos = pos;
-            const res = this._repeat.parse(source);
-            if (res.success) {
-                results.push(res.value);
-            } else {
-                return res as ParseResultFail;
-            }
-        }
+        return new ParseResultOk(this.mapper());
     }
 }
 
@@ -553,11 +610,69 @@ class Peek<T> extends Parser<T> {
     }
 }
 
+class PeekSkip extends Skip {
+    constructor(parser: Skip) {
+        super(parser);
+    }
+    parse(source: Source): ParseResult<undefined> {
+        const pos = source.pos;
+        const result = this.parser.parse(source);
+        source.pos = pos;
+        if (result.success) {
+            return new ParseResultOk(undefined);
+        }
+        return result;
+    }
+}
+
+class Times<T> extends Parser<T[]> {
+    constructor(private parser: Parser<T>, private _times: number) {
+        super();
+    }
+    parse(source: Source): ParseResult<T[]> {
+        const results = [];
+        for (let i = 0; i < this._times; ++i) {
+            const result = this.parser.parse(source);
+            if (result.success) {
+                results.push(result.value);
+            } else {
+                return result;
+            }
+        }
+        return new ParseResultOk(results);
+    }
+}
+
+class TimesSkip extends Skip {
+    constructor(parser: Parser<any>, private _times: number) {
+        super(parser);
+    }
+    parse(source: Source): ParseResult<undefined> {
+        for (let i = 0; i < this._times; ++i) {
+            const result = this.parser.parse(source);
+            if (!result.success) {
+                return result;
+            }
+        }
+        return new ParseResultOk(undefined);
+    }
+}
+
 export namespace grammar {
     /**
      * matches a decimal digit
      */
     export function digit(): Parser<string> {
         return oneOf("0123456789").expect("digit");
+    }
+    const ASCII_ZERO = "0".charCodeAt(0);
+    export function decimal() {
+        return digit().map((digit) => digit.charCodeAt(0) - ASCII_ZERO).many1().map(numbers => {
+            let number = 0;
+            for (const num of numbers) {
+                number = number * 10 + num;
+            }
+            return number;
+        });
     }
 }
