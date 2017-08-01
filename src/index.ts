@@ -101,8 +101,8 @@ export abstract class Parser<T> {
      * if "this" succeeds, map the produced value through "mapper" function
      */
     map<U>(this: Skip, mapper: () => U): Parser<U>;
-    map<U>(this: Parser<T>, mapper: (value: T) => U): Parser<U>
-    map<U>(this: Parser<T> | Skip, mapper: (value?: T) => U): Parser<U> {
+    map<U>(this: Parser<T>, mapper: (value: T) => U): Parser<U>;
+    map<U>(this: Parser<T> | Skip, mapper: ((value?: T) => U) | (() => U)): Parser<U> {
         const self = this;
         if (is_skip(self)) {
             return new MapSkip(self, mapper);
@@ -110,7 +110,7 @@ export abstract class Parser<T> {
         return new Map(self, mapper);
     }
     retn<U>(value: U): Parser<U> {
-        return this.map(()=>value);
+        return this.map(() => value);
     }
     /**
      * if "this" fails, changes the error message to: `expecting "${what}"`
@@ -249,7 +249,7 @@ export abstract class Parser<T> {
     /**
      * only applicable to Parser<string[]>
      */
-    join(this: Parser<string[]>, separator: string = ""): Parser<string> {
+    join(this: Parser<string[]>, separator = ""): Parser<string> {
         return new Join(this, separator);
     }
 

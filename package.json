@@ -13,7 +13,8 @@
   },
   "keywords": [
     "parser",
-    "combinator"
+    "combinator",
+    "parsec"
   ],
   "author": "jsen-",
   "license": "(MIT OR Apache-2.0)",
@@ -22,7 +23,6 @@
   },
   "homepage": "https://github.com/jsen-/shrewd#readme",
   "devDependencies": {
-    "tslint": "^5.5.0",
     "typescript": "^2.4.2",
     "@types/node": "^8.0.0"
   }

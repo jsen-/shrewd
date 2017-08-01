@@ -35,7 +35,6 @@ const r = String.raw;
 
 // test string_literal
 expectEq(string_literal(), r`"Hell\"o"`, r`Hell"o`);
-//expectEq(string_literal(), r`"Hell\\o"`, r`Hell\o`);
 expectEq(string_literal(), r`"Hell\o"`, r`Hello`);
 
 expectEq(char("a")
