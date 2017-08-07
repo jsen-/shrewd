@@ -1,4 +1,4 @@
-import { Parser, Source, ParseResult, ParseResultFail, char, eof, seq } from ".";
+import { Parser, Source, ParseResult, char, eof, seq } from ".";
 import { deepEqual } from "assert";
 
 import { string_literal } from "./parsers/string_literal";
@@ -8,20 +8,20 @@ import { new_line } from "./parsers/new_line";
 export function expectEq<T>(parser: Parser<T>, input: string, expected: T) {
     const source = new Source(input, 0);
     const result = parser.followedBy(eof()).parse(source);
-    if (!result.success) {
-        const source = (result as ParseResultFail).source as Source;
+    if (!result.is_ok()) {
+        const [source, reason] = result.unwrap_err();
         const input = (source as any).input as string;
         const pos = source.pos;
 
         const begin = Math.max(0, pos - 10);
         const end = Math.max(input.length, pos + 10);
-        console.error(`parse error on pos ${source.pos}: ${(result as ParseResultFail).reason}
+        console.error(`parse error on pos ${source.pos}: ${reason}
 ${input.substring(begin, end)}
 ${" ".repeat(pos - begin)}^`);
         return false;
     }
     try {
-        deepEqual(result.value, expected);
+        deepEqual(result.unwrap(), expected);
     } catch (e) {
         console.error(e.toString());
         return false;

@@ -1,3 +1,5 @@
+import { Ok, Err, Result } from "./result";
+
 export class Source {
     constructor(private input: string, public pos: number) { }
     next() {
@@ -9,17 +11,30 @@ export class Source {
     }
 }
 
-export class ParseResultOk<T> {
-    success: true = true;
-    constructor(public value: T) { }
+// export class ParseResultOk<T> {
+//     success: true = true;
+//     constructor(public value: T) { }
+// }
+
+// export class ParseResultFail {
+//     success: false = false;
+//     constructor(public source: Source, public reason?: string) { }
+// }
+
+export type ParseError = [Source, string | void];
+export type ParseResult<T> = Result<T, ParseError>;
+
+function success<T>(value: T): Ok<T, ParseError> {
+    return new Ok<T, ParseError>(value);
+}
+function fail<T>(source: Source, err?: string): Err<T, ParseError> {
+    return new Err<T, ParseError>([source, err]);
+}
+function cast_err<T>(err: Err<any, ParseError>): Err<T, ParseError> {
+    return err;
 }
 
-export class ParseResultFail {
-    success: false = false;
-    constructor(public source: Source, public reason?: string) { }
-}
 
-export type ParseResult<T> = ParseResultOk<T> | ParseResultFail;
 
 function is_skip(parser: Parser<any> | Skip): parser is Skip {
     // TODO: is this boolean thing faster then instanceof?
@@ -44,7 +59,7 @@ export abstract class Parser<T> {
                 value: function parse_or(source: Source) {
                     const pos = source.pos;
                     const self_result = parser.parse(source);
-                    if (self_result.success) {
+                    if (self_result.is_ok()) {
                         return self_result;
                     }
                     source.pos = pos;
@@ -109,6 +124,9 @@ export abstract class Parser<T> {
         }
         return new Map(self, mapper);
     }
+    validate(validator: (value: T) => ParseResult<T>): Parser<T> {
+        return new Validate(this, validator);
+    }
     retn<U>(value: U): Parser<U> {
         return this.map(() => value);
     }
@@ -123,10 +141,10 @@ export abstract class Parser<T> {
             parse: {
                 value: function parse_expect(source: Source) {
                     const result = parser.parse(source);
-                    if (result.success) {
+                    if (result.is_ok()) {
                         return result;
                     }
-                    return new ParseResultFail(source, `expecting ${this.what}`);
+                    return new Err([source, `expecting ${this.what}`]);
                 }
             }
         });
@@ -208,14 +226,14 @@ export abstract class Parser<T> {
         const parser = this;
         return Object.create(this, {
             parse: {
-                value: function parse_optional(source: Source): ParseResultOk<T | undefined> {
+                value: function parse_optional(source: Source): ParseResult<T | undefined> {
                     const pos = source.pos;
                     const result = parser.parse(source);
-                    if (result.success) {
+                    if (result.is_ok()) {
                         return result;
                     }
                     source.pos = pos;
-                    return new ParseResultOk(undefined);
+                    return new Ok(undefined);
                 }
             }
         });
@@ -271,8 +289,8 @@ export class Skip extends Parser<undefined> {
     }
     parse(source: Source): ParseResult<undefined> {
         const result = this.parser.parse(source);
-        if (result.success) {
-            return new ParseResultOk(undefined);
+        if (result.is_ok()) {
+            return new Ok(undefined);
         }
         return result;
     }
@@ -280,7 +298,7 @@ export class Skip extends Parser<undefined> {
 
 export function always<T>(value: T): Parser<T> {
     return new CustomParser((source: Source) => {
-        return new ParseResultOk(value);
+        return new Ok(value);
     });
 }
 
@@ -291,9 +309,9 @@ export function any(): Parser<string> {
     return new CustomParser((source) => {
         const next = source.next();
         if (next !== "") {
-            return new ParseResultOk(next);
+            return new Ok(next);
         }
-        return new ParseResultFail(source, `expected any character, got EOF`);
+        return fail(source, `expected any character, got EOF`);
     });
 }
 
@@ -307,9 +325,9 @@ export function char(char: string): Parser<string> {
     return new CustomParser((source) => {
         const next = source.next();
         if (next === char) {
-            return new ParseResultOk(next);
+            return new Ok(next);
         }
-        return new ParseResultFail(source, `expecting "${char}", got "${next}"`);
+        return fail(source, `expecting "${char}", got "${next}"`);
     });
 }
 
@@ -321,9 +339,9 @@ export function oneOf(chars: string): Parser<string> {
     return new CustomParser((source: Source) => {
         const next = source.next();
         if (char_array.includes(next)) {
-            return new ParseResultOk(next);
+            return new Ok(next);
         }
-        return new ParseResultFail(source, `one of "${chars}"`);
+        return fail(source, `one of "${chars}"`);
     });
 }
 
@@ -334,8 +352,8 @@ export function eof(): Parser<undefined> {
     return new CustomParser((source: Source) => {
         const next = source.next();
         return (next === "")
-            ? new ParseResultOk(undefined)
-            : new ParseResultFail(source, `expected "EOF", got "${next}"`);
+            ? new Ok(undefined)
+            : fail(source, `expected "EOF", got "${next}"`);
     });
 }
 /**
@@ -348,16 +366,17 @@ export function string(str: string): Parser<string> {
             const next = source.next();
             matched.push(next);
             if (ch !== next) {
-                return new ParseResultFail(source, `expecting "${str}", got "${matched.join("")}"`);
+                return fail(source, `expecting "${str}", got "${matched.join("")}"`);
             }
         }
-        return new ParseResultOk(str);
+        return new Ok(str);
     });
 }
 
 /**
  * for now only seq of parsers of the same type
- * once typescript gets variadic generics (https://github.com/Microsoft/TypeScript/issues/5453) it should be doable to make seq use arbitraty types
+ * once typescript gets variadic generics (https://github.com/Microsoft/TypeScript/issues/5453)
+ * it should be doable to make seq use arbitraty types
  */
 export function seq<T>(arg: Skip, ...args: Skip[]): Skip;
 export function seq<T>(arg: Parser<T>, ...args: Parser<T>[]): Parser<T[]>;
@@ -376,19 +395,19 @@ class Seq<T> extends Parser<T[]> {
     }
     parse(source: Source): ParseResult<T[]> {
         const result1 = this.parser.parse(source);
-        if (!result1.success) {
-            return new ParseResultFail(source);
+        if (!result1.is_ok()) {
+            return fail(source);
         }
-        const results = [result1.value];
+        const results = [result1.unwrap()];
         for (const p of this.rest) {
             const result2 = p.parse(source);
-            if (result2.success) {
-                results.push(result2.value as T);
+            if (result2.is_ok()) {
+                results.push(result2.unwrap());
             } else {
-                return result2 as ParseResultFail;
+                return cast_err(result2);
             }
         }
-        return new ParseResultOk(results);
+        return new Ok(results);
     }
 }
 
@@ -402,16 +421,16 @@ class SkipSeq extends Skip {
     }
     parse(source: Source): ParseResult<undefined> {
         const result1 = this.parser.parse(source);
-        if (!result1.success) {
-            return new ParseResultFail(source);
+        if (!result1.is_ok()) {
+            return fail(source);
         }
         for (const p of this.rest) {
             const result2 = p.parse(source);
-            if (!result2.success) {
+            if (!result2.is_ok()) {
                 return result2;
             }
         }
-        return new ParseResultOk(undefined);
+        return new Ok(undefined);
     }
 }
 
@@ -432,7 +451,7 @@ class Or<T> extends Parser<T> {
     parse(source: Source): ParseResult<T> {
         const pos = source.pos;
         const first_result = this.first.parse(source);
-        if (first_result.success) {
+        if (first_result.is_ok()) {
             return first_result;
         }
         source.pos = pos;
@@ -446,14 +465,16 @@ class Then<T, U> extends Parser<[T, U]> {
     }
     parse(source: Source): ParseResult<[T, U]> {
         const first_result = this.first.parse(source);
-        if (!first_result.success) {
-            return first_result as ParseResultFail;
+        if (!first_result.is_ok()) {
+            return cast_err(first_result);
         }
         const second_result = this.second.parse(source);
-        if (!second_result.success) {
-            return second_result as ParseResultFail;
+        if (!second_result.is_ok()) {
+            return cast_err(second_result);
         }
-        return new ParseResultOk<[T, U]>([first_result.value, second_result.value]);
+        const x = first_result.unwrap();
+        const y = second_result.unwrap();
+        return success<[T, U]>([x, y]);
     }
 }
 
@@ -463,8 +484,8 @@ class Next<T> extends Parser<T> {
     }
     parse(source: Source): ParseResult<T> {
         const first_result = this.first.parse(source);
-        if (!first_result.success) {
-            return first_result as ParseResultFail;
+        if (!first_result.is_ok()) {
+            return first_result;
         }
         return this.second.parse(source);
     }
@@ -479,11 +500,11 @@ class Many<T> extends Parser<T[]> {
         for (; ;) {
             const pos = source.pos;
             const res = this.parser.parse(source);
-            if (!res.success) {
+            if (!res.is_ok()) {
                 source.pos = pos;
-                return new ParseResultOk(ret);
+                return success(ret);
             } else {
-                ret.push(res.value);
+                ret.push(res.unwrap());
             }
         }
     }
@@ -497,9 +518,9 @@ class SkipMany extends Skip {
         for (; ;) {
             const pos = source.pos;
             const res = this.parser.parse(source);
-            if (!res.success) {
+            if (!res.is_ok()) {
                 source.pos = pos;
-                return new ParseResultOk(undefined);
+                return new Ok(undefined);
             }
         }
     }
@@ -511,18 +532,18 @@ class Many1<T> extends Parser<T[]> {
     }
     parse(source: Source): ParseResult<T[]> {
         const res = this.parser.parse(source);
-        if (!res.success) {
-            return res as ParseResultFail;
+        if (!res.is_ok()) {
+            return cast_err(res);
         }
-        const ret = [res.value];
+        const ret = [res.unwrap()];
         for (; ;) {
             const pos = source.pos;
             const res = this.parser.parse(source);
-            if (!res.success) {
+            if (!res.is_ok()) {
                 source.pos = pos;
-                return new ParseResultOk(ret);
+                return new Ok(ret);
             } else {
-                ret.push(res.value);
+                ret.push(res.unwrap());
             }
         }
     }
@@ -534,10 +555,10 @@ class Map<T, U> extends Parser<U> {
     }
     parse(source: Source): ParseResult<U> {
         const result = this.from.parse(source);
-        if (!result.success) {
-            return result;
+        if (!result.is_ok()) {
+            return cast_err(result);
         }
-        return new ParseResultOk(this.mapper(result.value));
+        return new Ok(this.mapper(result.unwrap()));
     }
 }
 
@@ -547,10 +568,19 @@ class MapSkip<U> extends Parser<U> {
     }
     parse(source: Source): ParseResult<U> {
         const result = this.from.parse(source);
-        if (!result.success) {
-            return result;
+        if (!result.is_ok()) {
+            return cast_err(result);
         }
-        return new ParseResultOk(this.mapper());
+        return new Ok(this.mapper());
+    }
+}
+
+class Validate<T> extends Parser<T> {
+    constructor(private parser: Parser<T>, private validator: (value: T) => ParseResult<T>) {
+        super();
+    }
+    parse(source: Source): ParseResult<T> {
+        return this.parser.parse(source).and_then(this.validator);
     }
 }
 
@@ -560,12 +590,12 @@ class FollowedBy<T> extends Parser<T> {
     }
     parse(source: Source): ParseResult<T> {
         const first_res = this._first.parse(source);
-        if (!first_res.success) {
+        if (!first_res.is_ok()) {
             return first_res;
         }
         const second_res = this._next.parse(source);
-        if (!second_res.success) {
-            return second_res as ParseResultFail;
+        if (!second_res.is_ok()) {
+            return second_res;
         }
         return first_res;
     }
@@ -577,10 +607,10 @@ class Join extends Parser<string> {
     }
     parse(source: Source): ParseResult<string> {
         const result = this._parser.parse(source);
-        if (result.success) {
-            return new ParseResultOk(result.value.join(this._separator));
+        if (result.is_ok()) {
+            return new Ok(result.unwrap().join(this._separator));
         }
-        return result as ParseResultFail;
+        return cast_err(result);
     }
 }
 
@@ -590,10 +620,10 @@ class Not extends Skip {
     }
     parse(source: Source): ParseResult<undefined> {
         const result = this.parser.parse(source);
-        if (result.success) {
-            return new ParseResultFail(source);
+        if (result.is_ok()) {
+            return fail(source);
         } else {
-            return new ParseResultOk(undefined);
+            return new Ok(undefined);
         }
     }
 }
@@ -618,8 +648,8 @@ class PeekSkip extends Skip {
         const pos = source.pos;
         const result = this.parser.parse(source);
         source.pos = pos;
-        if (result.success) {
-            return new ParseResultOk(undefined);
+        if (result.is_ok()) {
+            return new Ok(undefined);
         }
         return result;
     }
@@ -633,13 +663,13 @@ class Times<T> extends Parser<T[]> {
         const results = [];
         for (let i = 0; i < this._times; ++i) {
             const result = this.parser.parse(source);
-            if (result.success) {
-                results.push(result.value);
+            if (result.is_ok()) {
+                results.push(result.unwrap());
             } else {
-                return result;
+                return cast_err(result);
             }
         }
-        return new ParseResultOk(results);
+        return new Ok(results);
     }
 }
 
@@ -650,11 +680,11 @@ class TimesSkip extends Skip {
     parse(source: Source): ParseResult<undefined> {
         for (let i = 0; i < this._times; ++i) {
             const result = this.parser.parse(source);
-            if (!result.success) {
+            if (!result.is_ok()) {
                 return result;
             }
         }
-        return new ParseResultOk(undefined);
+        return new Ok(undefined);
     }
 }
 
